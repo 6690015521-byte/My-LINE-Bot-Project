@@ -1,128 +1,128 @@
-import os
+import re
+import pandas as pd
+from linebot import LineBotApi, WebhookHandler
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.exceptions import LineBotApiError
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from flask import Flask, request, abort
-from linebot import LineBotApi, WebhookHandler
-from linebot.exceptions import InvalidSignatureError
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
 
-# --- ส่วนตั้งค่า (กรุณาแก้ไขข้อมูลในส่วนนี้) ---
-
-# ตั้งค่า LINE Bot
-CHANNEL_ACCESS_TOKEN = 'n1vorbwHeYMPtZkpEFyZfkUmYL97ThlNM1mlmqoml5uuCC6sTbwtzdEwvtOTPE0z8/kGYb7c1UAbULJwU0SM/8rOUHTrIAa0uYMTbh+DmCsAR8i5i/WUXC/a/3YsAS3gC1jaeAY26/h/InrN1prqkgdB04t89/1O/w1cDnyilFU='
-CHANNEL_SECRET = '5823e71cf9d214f199a4cb5981e65d1d'
+# ตั้งค่า Line Bot
+line_bot_api = LineBotApi('m5JJxtf5Dwh/vy6V3kKhs5ClXLraMumyAbDUgKDt3FSXOXPMUL8LSMsyecRtwWHGUomZsfXBE5ofH9xzMu3x3jN2a3TiN+lr95DC0oxzVwmt2/oeKkrxZP5HJc3wYh+D2GezTSar/VOHr5N48jg61wdB04t89/1O/w1cDnyilFU=')
+handler = WebhookHandler('0cd96d62ba67bcad21bf985da88c57d4')
 
 # ตั้งค่า Google Sheets
-GOOGLE_SHEET_NAME = 'ข้อมูลบริษัท' # ชื่อชีตของคุณ
-GOOGLE_CREDENTIALS_FILE = 'credentials.json' # ชื่อไฟล์ credentials ที่ดาวน์โหลดมา
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client = gspread.authorize(creds)
 
-# ----------------------------------------------
+# เปิดชีต "ข้อมูลบริษัท"
+spreadsheet = client.open("ข้อมูลบริษัท")
+worksheet = spreadsheet.sheet1
 
-# สร้าง instance ของ Flask app
+# ฟังก์ชันค้นหาบริษัทจากคำค้นหา
+def search_company(keyword):
+    # ดึงข้อมูลทั้งหมดจากชีต
+    data = worksheet.get_all_values()
+    df = pd.DataFrame(data[1:], columns=data[0])  # แถวแรกเป็นหัวคอลัมน์
+    
+    # ค้นหาบริษัทที่ตรงกับคำค้นหา (ค้นในคอลัมน์ D: ชื่อบริษัทภาษาไทย)
+    matches = []
+    for idx, row in df.iterrows():
+        if keyword.lower() in row[3].lower():  # คอลัมน์ D (index 3)
+            matches.append((idx, row))
+    
+    # เรียงลำดับตามความใกล้เคียง (ง่ายๆ แบบนี้ก่อน)
+    matches.sort(key=lambda x: len(x[1][3]), reverse=False)
+    
+    return matches[:3]  # ส่งกลับ 3 บริษัทที่ใกล้เคียงที่สุด
+
+# ฟังก์ชันจัดรูปแบบข้อมูลบริษัท
+def format_company_info(company_data):
+    # company_data เป็น list ของข้อมูลในแต่ละคอลัมน์
+    info = f"- {company_data[0]} : {company_data[1]} : {company_data[2]} : \n"  # ลำดับ : ว/ด/ป : เลขนิติบุคคล
+    info += f"- {company_data[3]}\n"  # ชื่อบริษัทภาษาไทย
+    info += f"- {company_data[4]}\n"  # ชื่อบริษัทภาษาอังกฤษ
+    info += f"- {company_data[5]}\n\n"  # ที่ตั้งบริษัท
+    
+    # กรรมการ
+    directors = company_data[6].split('\n') if company_data[6] else []
+    info += "- กรรมการ\n"
+    for i, director in enumerate(directors, 1):
+        info += f"  {i}. {director.strip()}\n"
+    
+    # หุ้นส่วน
+    shareholders = company_data[7].split('\n') if company_data[7] else []
+    info += "\n- หุ้นส่วน\n"
+    for i, shareholder in enumerate(shareholders, 1):
+        info += f"  {i}. {shareholder.strip()}\n"
+    
+    # ข้อมูลเพิ่มเติม
+    info += f"\n- {company_data[8]}\n"  # วันปิดงบประจำปี
+    info += f"- Password DBD e-Filing: {company_data[9]}\n"
+    info += f"- Password สรรพากร e-Filing: {company_data[10]}\n"
+    info += f"- ID sso e-service: {company_data[11]}\n"
+    info += f"- Password sso e-service: {company_data[12]}\n"
+    info += f"- อำนาจกรรมการตามข้อบังคับ: {company_data[13]}\n"
+    
+    return info
+
+# ฟังก์ชันจัดการข้อความจาก Line
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    text = event.message.text.strip()
+    
+    # ตรวจสอบว่าข้อความขึ้นต้นด้วย "หาบริษัท" หรือไม่
+    if text.startswith("หาบริษัท"):
+        keyword = text.replace("หาบริษัท", "").strip()
+        
+        if not keyword:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="กรุณาระบุชื่อบริษัทที่ต้องการค้นหา เช่น 'หาบริษัท ไทย'")
+            )
+            return
+        
+        # ค้นหาบริษัท
+        companies = search_company(keyword)
+        
+        if not companies:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=f"ไม่พบบริษัทที่ตรงกับ '{keyword}'")
+            )
+            return
+        
+        # ส่งข้อมูลบริษัทที่พบ
+        for idx, company in companies:
+            company_info = format_company_info(company)
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=company_info)
+            )
+    else:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="พิมพ์ 'หาบริษัท [ชื่อบริษัท]' เพื่อค้นหาข้อมูลบริษัท")
+        )
+
+# ตัวอย่างการใช้งาน (ต้องนำไปใส่ใน Flask App)
+"""
+from flask import Flask, request, abort
+
 app = Flask(__name__)
 
-# สร้าง instance ของ LINE Bot API และ Webhook Handler
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
-
-# ฟังก์ชันสำหรับเชื่อมต่อและดึงข้อมูลทั้งหมดจาก Google Sheet
-def get_sheet_data():
-    """เชื่อมต่อกับ Google Sheets และดึงข้อมูลทั้งหมดออกมาเป็น List of Dictionaries"""
-    try:
-        scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets',
-                 "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
-        creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDENTIALS_FILE, scope)
-        client = gspread.authorize(creds)
-        sheet = client.open(GOOGLE_SHEET_NAME).sheet1
-        # .get_all_records() จะดึงข้อมูลทั้งหมดและแปลงเป็น list ของ dictionary โดยใช้แถวแรกเป็น key
-        return sheet.get_all_records()
-    except Exception as e:
-        print(f"Error accessing Google Sheet: {e}")
-        return None
-
-# Webhook สำหรับรับข้อมูลจาก LINE
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
+    
     try:
         handler.handle(body, signature)
-    except InvalidSignatureError:
+    except LineBotApiError as e:
         abort(400)
+    
     return 'OK'
 
-# จัดการกับข้อความที่ส่งเข้ามา
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_message = event.message.text.strip()
-    
-    # ตรวจสอบว่าข้อความขึ้นต้นด้วย "หาบริษัท" หรือไม่
-    if user_message.startswith("หาบริษัท"):
-        # ตัดคำว่า "หาบริษัท" และช่องว่างออกไปเพื่อเอาเฉพาะชื่อที่ใช้ค้นหา
-        search_query = user_message[len("หาบริษัท"):].strip()
-        
-        if not search_query:
-            reply_text = "กรุณาระบุชื่อบริษัทที่ต้องการค้นหาด้วยครับ\nตัวอย่าง: หาบริษัท เทส จำกัด"
-        else:
-            # ดึงข้อมูลจาก Google Sheet
-            company_data = get_sheet_data()
-            
-            if company_data is None:
-                reply_text = "ขออภัยครับ ไม่สามารถเชื่อมต่อกับฐานข้อมูลบริษัทได้"
-            else:
-                found_company = None
-                # วนลูปหาบริษัทที่ชื่อใกล้เคียง
-                for company in company_data:
-                    # ตรวจสอบว่า search_query เป็นส่วนหนึ่งของชื่อบริษัทหรือไม่ (ไม่ต้องพิมพ์เต็ม)
-                    if search_query.lower() in company.get('ชื่อ บริษัทภาษาไทย', '').lower():
-                        found_company = company
-                        break # เจอแล้วให้หยุดค้นหาทันที
-                
-                if found_company:
-                    # จัดรูปแบบข้อความตอบกลับตามที่ต้องการ
-                    try:
-                        # จัดการรายชื่อกรรมการและหุ้นส่วนให้ขึ้นบรรทัดใหม่สวยงาม
-                        # โดยการแทนที่ตัวเลขลำดับ (2., 3., 4., ...) ด้วยการขึ้นบรรทัดใหม่
-                        directors = str(found_company.get('กรรมการ', ''))
-                        for i in range(10, 1, -1):
-                            directors = directors.replace(f'{i}.', f'\n- {i}.')
-
-                        partners = str(found_company.get('หุ้นส่วน', ''))
-                        for i in range(10, 1, -1):
-                            partners = partners.replace(f'{i}.', f'\n- {i}.')
-
-                        # สร้างข้อความตอบกลับ
-                        reply_text = f"""
-ข้อมูลบริษัทที่คุณค้นหา:
-
-{found_company.get('ลำดับ', '')} : {found_company.get('ว/ด/ป /ที่จดทะเบียน', '')} : {found_company.get('เลขนิติบุคล', '')} :
-- บริษัท {found_company.get('ชื่อ บริษัทภาษาไทย', '')}
-- {found_company.get('ชื่อบริษัท ภาษาอังกฤษ', '')}
-- {found_company.get('ที่ตั้งบริษัท', '')}
-- กรรมการ {directors}
-- หุ้นส่วน {partners}
-- วันปิดงบประจำปี: {found_company.get('วันปิดงบประจำปี', '')}
-- Password DBD e-Filing: {found_company.get('Password DBD e-Filing', '')}
-- Password สรรพากร e-Filing: {found_company.get('Password สรรพากร e-Filing', '')}
-- ID sso e-service: {found_company.get('ID sso e-service', '')}
-- Password sso e-service: {found_company.get('Passerord sso e-service', '')}
-- อำนาจกรรมการตามข้อบังคับ: {found_company.get('อำนาจกรรมการตามข้อบังคับ', '')}
-                        """.strip()
-
-                    except Exception as e:
-                        reply_text = f"เกิดข้อผิดพลาดในการจัดรูปแบบข้อมูล: {e}"
-                else:
-                    reply_text = f"ไม่พบข้อมูลบริษัทที่ชื่อใกล้เคียงกับ '{search_query}'"
-
-        # ส่งข้อความตอบกลับไปที่ LINE
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_text)
-        )
-
-# สั่งให้ Flask app เริ่มทำงาน
 if __name__ == "__main__":
-    # ใช้ port ที่ Heroku หรือ Cloud Run กำหนดให้ หรือใช้ 5000 สำหรับทดสอบในเครื่อง
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host='0.0.0.0', port=port)
+    app.run()
+"""
