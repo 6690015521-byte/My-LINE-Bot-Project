@@ -1,2 +1,2 @@
-python app.py
+gunicorn app.py
 gunicorn app:app
