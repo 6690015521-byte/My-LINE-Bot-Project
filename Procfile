@@ -1,2 +1,2 @@
 
-gunicorn app:app
+
